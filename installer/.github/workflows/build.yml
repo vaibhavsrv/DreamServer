@@ -87,3 +87,24 @@ jobs:
             src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
             src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
           if-no-files-found: ignore
+
+      - name: Generate SHA256 checksums
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          artifact_name="${{ matrix.artifact }}"
+          platform="${artifact_name#ods-installer-}"
+          mkdir -p release-assets
+          if command -v sha256sum >/dev/null 2>&1; then
+            find src-tauri/target/${{ matrix.target }}/release/bundle -type f \( -name "*.exe" -o -name "*.msi" -o -name "*.dmg" -o -name "*.AppImage" -o -name "*.deb" \) -exec sha256sum {} + > "release-assets/SHA256SUMS-${platform}.txt"
+          else
+            find src-tauri/target/${{ matrix.target }}/release/bundle -type f \( -name "*.exe" -o -name "*.msi" -o -name "*.dmg" -o -name "*.AppImage" -o -name "*.deb" \) -exec shasum -a 256 {} + > "release-assets/SHA256SUMS-${platform}.txt"
+          fi
+
+      - name: Upload checksums
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}-checksum
+          path: release-assets/SHA256SUMS-*.txt
+          if-no-files-found: ignore
