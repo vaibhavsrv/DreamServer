@@ -643,6 +643,13 @@ class TestGetLlamaMetrics:
         assert helpers._get_lifetime_tokens() == 100
         assert json.loads(helpers._TOKEN_FILE.read_text())["last_server_counter"] == 100
 
+    @pytest.mark.asyncio
+    async def test_returns_fallback_when_llama_server_not_in_services(self, monkeypatch):
+        monkeypatch.setattr("helpers.SERVICES", {})
+        result = await get_llama_metrics()
+        assert result["tokens_per_second"] == 0
+        assert result["token_count_mode"] == "cumulative"
+
 
 # --- get_loaded_model ---
 
@@ -715,6 +722,12 @@ class TestGetLoadedModel:
         result = await get_loaded_model()
         assert result is None
 
+    @pytest.mark.asyncio
+    async def test_returns_none_when_llama_server_not_in_services(self, monkeypatch):
+        monkeypatch.setattr("helpers.SERVICES", {})
+        result = await get_loaded_model()
+        assert result is None
+
 
 # --- get_llama_context_size ---
 
@@ -757,6 +770,12 @@ class TestGetLlamaContextSize:
 
         monkeypatch.setattr("helpers.httpx.AsyncClient", lambda **kw: mock_client)
 
+        result = await get_llama_context_size(model_hint="test-model")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_llama_server_not_in_services(self, monkeypatch):
+        monkeypatch.setattr("helpers.SERVICES", {})
         result = await get_llama_context_size(model_hint="test-model")
         assert result is None
 
