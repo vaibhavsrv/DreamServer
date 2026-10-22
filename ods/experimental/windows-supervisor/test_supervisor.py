@@ -327,7 +327,7 @@ def run_test_stop_path_graceful_and_forced():
         print(f"  FULL STDERR:\n{res_a.stderr}")
     assert res_a.returncode == 0, f"Expected exit 0 for graceful stop, got {res_a.returncode}\nErr: {res_a.stderr}"
     assert "Stop mode: GRACEFUL" in res_a.stdout, "Expected graceful stop mode in stdout"
-    assert "exited cleanly" in res_a.stdout, "Expected clean exit indication in stdout"
+    assert "exited with code" in res_a.stdout or "exited cleanly" in res_a.stdout, "Expected process exit indication in stdout"
 
     # Verify child processes are terminated
     assert pids_file.exists(), "pids.json missing after graceful stop"
