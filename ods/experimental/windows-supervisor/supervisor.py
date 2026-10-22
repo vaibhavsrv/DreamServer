@@ -32,9 +32,9 @@ LLAMA_SERVER_PIN = {
 
 MODEL_PIN = {
     "repo": "unsloth/SmolLM2-135M-Instruct-GGUF",
-    "commit": "1bf3e0f9b37c0f13f1737e1ae8c9a3bf8ba405f6",
+    "commit": "9e6855bc4be717fca1ef21360a1db4b29d5c559a",
     "filename": "SmolLM2-135M-Instruct-Q4_K_M.gguf",
-    "url": "https://huggingface.co/unsloth/SmolLM2-135M-Instruct-GGUF/resolve/1bf3e0f9b37c0f13f1737e1ae8c9a3bf8ba405f6/SmolLM2-135M-Instruct-Q4_K_M.gguf",
+    "url": "https://huggingface.co/unsloth/SmolLM2-135M-Instruct-GGUF/resolve/9e6855bc4be717fca1ef21360a1db4b29d5c559a/SmolLM2-135M-Instruct-Q4_K_M.gguf",
     "sha256": "ed5fa30c487b282ec156c29062f1222e5c20875a944ac98289dbd242e947f747",
     "size_bytes": 105454144
 }
@@ -163,7 +163,7 @@ class WindowsNativeSupervisor:
     def download_and_verify(self, force: bool = False):
         # 1. Download and verify llama-server
         zip_path = self.data_dir / LLAMA_SERVER_PIN["asset"]
-        if force or not zip_path.exists() or zip_path.stat().st_size != LLAMA_SERVER_PIN["size_bytes"]:
+        if force or not zip_path.exists():
             print(f"Downloading {LLAMA_SERVER_PIN['url']}...")
             self._download(LLAMA_SERVER_PIN["url"], zip_path)
             
@@ -190,7 +190,7 @@ class WindowsNativeSupervisor:
 
         # 2. Download and verify model GGUF
         model_path = self.models_dir / MODEL_PIN["filename"]
-        if force or not model_path.exists() or model_path.stat().st_size != MODEL_PIN["size_bytes"]:
+        if force or not model_path.exists():
             print(f"Downloading {MODEL_PIN['url']}...")
             self._download(MODEL_PIN["url"], model_path)
             
@@ -207,6 +207,7 @@ class WindowsNativeSupervisor:
         return llama_exe, model_path
 
     def _download(self, url: str, dest: Path):
+        dest.parent.mkdir(parents=True, exist_ok=True)
         req = urllib.request.Request(url, headers={"User-Agent": "ODS-Supervisor/1.0"})
         with urllib.request.urlopen(req, timeout=120) as resp, open(dest, "wb") as f:
             while chunk := resp.read(1024 * 1024):
@@ -376,7 +377,15 @@ def main():
         sup.stop()
         sys.exit(0)
     signal.signal(signal.SIGINT, handle_signal)
-    signal.signal(signal.SIGTERM, handle_signal)
+    if hasattr(signal, "SIGTERM"):
+        signal.signal(signal.SIGTERM, handle_signal)
+    # Pre-flight port availability check
+    if not verify_port_available(args.llama_port):
+        print(f"ERROR: Port {args.llama_port} is already in use by another process.", file=sys.stderr)
+        sys.exit(3)
+    if not verify_port_available(args.dashboard_port):
+        print(f"ERROR: Port {args.dashboard_port} is already in use by another process.", file=sys.stderr)
+        sys.exit(3)
 
     llama_exe, model_path = sup.download_and_verify()
     sup.start(llama_exe, model_path)

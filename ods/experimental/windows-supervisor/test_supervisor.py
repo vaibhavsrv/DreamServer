@@ -15,6 +15,7 @@ import sys
 import time
 import socket
 import subprocess
+import urllib.request
 from pathlib import Path
 
 PYTHON = sys.executable
@@ -40,20 +41,33 @@ def is_pid_running(pid: int) -> bool:
         except OSError:
             return False
 
-def run_test_hash_mismatch():
-    print("\n[TEST 1/6] Testing Hash Mismatch Rejection...")
-    bad_data = DATA_DIR / "bad_hash_data"
-    bad_data.mkdir(parents=True, exist_ok=True)
-    # Write corrupt zip
-    (bad_data / "llama-b9014-bin-win-cpu-x64.zip").write_text("corrupted content", encoding="utf-8")
-    
-    cmd = [PYTHON, str(SUPERVISOR_SCRIPT), "--data-dir", str(bad_data)]
+def wait_for_llama_ready(port: int = 8080, timeout: float = 25.0) -> bool:
+    t0 = time.perf_counter()
+    while time.perf_counter() - t0 < timeout:
+        try:
+            req = urllib.request.Request(f"http://127.0.0.1:{port}/health")
+            with urllib.request.urlopen(req, timeout=1.0) as r:
+                if r.status == 200:
+                    return True
+        except Exception:
+            time.sleep(0.4)
+    return False
+
+def run_test_happy_path():
+    print("\n[TEST 1/6] Testing Happy Path Probe...")
+    t0 = time.perf_counter()
+    shared_data = DATA_DIR / "shared_data"
+    cmd = [PYTHON, str(SUPERVISOR_SCRIPT), "--data-dir", str(shared_data), "--run-probe"]
     res = subprocess.run(cmd, capture_output=True, text=True)
-    print(f"Exit code: {res.returncode}")
-    print(f"Stderr: {res.stderr.strip()[:150]}")
-    assert res.returncode == 2, f"Expected exit code 2, got {res.returncode}"
-    assert "SHA-256 mismatch" in res.stderr, "Expected SHA-256 mismatch in stderr"
-    print("PASS: Hash mismatch rejected cleanly.")
+    elapsed = time.perf_counter() - t0
+    print(f"Exit code: {res.returncode} in {elapsed:.2f}s")
+    print(f"Stdout snippet:\n{res.stdout[-300:].strip()}")
+    if res.returncode != 0:
+        print(f"FULL STDERR:\n{res.stderr}")
+    assert res.returncode == 0, f"Expected exit code 0, got {res.returncode}\nStderr: {res.stderr}"
+    assert "Both processes healthy" in res.stdout, "Expected healthy processes in stdout"
+    assert "Chat probe response" in res.stdout, "Expected chat probe response"
+    print("PASS: Happy path executed and verified cleanly.")
 
 def run_test_port_in_use():
     print("\n[TEST 2/6] Testing Port Collision Rejection...")
@@ -66,15 +80,30 @@ def run_test_port_in_use():
         cmd = [PYTHON, str(SUPERVISOR_SCRIPT), "--data-dir", str(DATA_DIR / "shared_data"), "--run-probe"]
         res = subprocess.run(cmd, capture_output=True, text=True)
         print(f"Exit code: {res.returncode}")
-        print(f"Stderr: {res.stderr.strip()[:150]}")
+        print(f"Stderr: {res.stderr.strip()}")
         assert res.returncode == 3, f"Expected exit code 3, got {res.returncode}"
         assert "Port 8080 is already in use" in res.stderr, "Expected port collision message in stderr"
         print("PASS: Port collision rejected cleanly with code 3.")
     finally:
         sock.close()
 
+def run_test_hash_mismatch():
+    print("\n[TEST 3/6] Testing Hash Mismatch Rejection...")
+    bad_data = DATA_DIR / "bad_hash_data"
+    bad_data.mkdir(parents=True, exist_ok=True)
+    # Write corrupt zip
+    (bad_data / "llama-b9014-bin-win-cpu-x64.zip").write_text("corrupted content", encoding="utf-8")
+    
+    cmd = [PYTHON, str(SUPERVISOR_SCRIPT), "--data-dir", str(bad_data)]
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    print(f"Exit code: {res.returncode}")
+    print(f"Stderr: {res.stderr.strip()}")
+    assert res.returncode == 2, f"Expected exit code 2, got {res.returncode}"
+    assert "SHA-256 mismatch" in res.stderr, "Expected SHA-256 mismatch in stderr"
+    print("PASS: Hash mismatch rejected cleanly.")
+
 def run_test_corrupt_model():
-    print("\n[TEST 3/6] Testing Corrupt Model Rejection...")
+    print("\n[TEST 4/6] Testing Corrupt Model Rejection...")
     corrupt_data = DATA_DIR / "corrupt_data"
     models_dir = corrupt_data / "models"
     models_dir.mkdir(parents=True, exist_ok=True)
@@ -84,24 +113,10 @@ def run_test_corrupt_model():
     cmd = [PYTHON, str(SUPERVISOR_SCRIPT), "--data-dir", str(corrupt_data)]
     res = subprocess.run(cmd, capture_output=True, text=True)
     print(f"Exit code: {res.returncode}")
-    print(f"Stderr: {res.stderr.strip()[:150]}")
+    print(f"Stderr: {res.stderr.strip()}")
     # Will fail either hash mismatch (2) or magic header (4)
     assert res.returncode in (2, 4), f"Expected exit code 2 or 4, got {res.returncode}"
     print("PASS: Corrupt model rejected cleanly.")
-
-def run_test_happy_path():
-    print("\n[TEST 4/6] Testing Happy Path Probe...")
-    t0 = time.perf_counter()
-    shared_data = DATA_DIR / "shared_data"
-    cmd = [PYTHON, str(SUPERVISOR_SCRIPT), "--data-dir", str(shared_data), "--run-probe"]
-    res = subprocess.run(cmd, capture_output=True, text=True)
-    elapsed = time.perf_counter() - t0
-    print(f"Exit code: {res.returncode} in {elapsed:.2f}s")
-    print(f"Stdout snippet:\n{res.stdout[-300:].strip()}")
-    assert res.returncode == 0, f"Expected exit code 0, got {res.returncode}\nStderr: {res.stderr}"
-    assert "Both processes healthy" in res.stdout, "Expected healthy processes in stdout"
-    assert "Chat probe response" in res.stdout, "Expected chat probe response"
-    print("PASS: Happy path executed and verified cleanly.")
 
 def run_test_child_killed_mid_run():
     print("\n[TEST 5/6] Testing Child Killed Mid-Run Detection...")
@@ -110,20 +125,22 @@ def run_test_child_killed_mid_run():
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     
     # Wait for readiness
-    time.sleep(4.0)
-    # Find llama-server child
+    ready = wait_for_llama_ready(8080, timeout=25.0)
+    print(f"Llama readiness before kill: {ready}")
+    assert ready, "llama-server failed to become ready before mid-run kill test!"
+    
+    # Find llama-server child and terminate forcefully
     if sys.platform == "win32":
         res = subprocess.run(["tasklist", "/FI", "IMAGENAME eq llama-server.exe", "/FO", "CSV", "/NH"],
                              capture_output=True, text=True)
         print(f"Llama process query: {res.stdout.strip()}")
-        # Terminate llama-server.exe forcefully
         subprocess.run(["taskkill", "/F", "/IM", "llama-server.exe"], capture_output=True)
     else:
         proc.terminate()
         
-    out, err = proc.communicate(timeout=10)
+    out, err = proc.communicate(timeout=15)
     print(f"Supervisor exit code: {proc.returncode}")
-    print(f"Stderr: {err.strip()[:200]}")
+    print(f"Stderr: {err.strip()}")
     assert proc.returncode == 6, f"Expected exit code 6, got {proc.returncode}"
     assert "died unexpectedly" in err, "Expected child death detection message"
     print("PASS: Child death detected and supervisor exited non-zero.")
@@ -134,15 +151,18 @@ def run_test_supervisor_killed_no_orphans():
     cmd = [PYTHON, str(SUPERVISOR_SCRIPT), "--data-dir", str(shared_data)]
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     
-    # Wait for supervisor to start children and assign Job Object
-    time.sleep(5.0)
+    # Wait for readiness and job object assignment
+    ready = wait_for_llama_ready(8080, timeout=25.0)
+    print(f"Llama readiness before supervisor kill: {ready}")
+    assert ready, "llama-server failed to become ready before supervisor kill test!"
+    
     sup_pid = proc.pid
     print(f"Supervisor PID: {sup_pid}")
     
     # Forcefully kill supervisor
     if sys.platform == "win32":
         subprocess.run(["taskkill", "/F", "/PID", str(sup_pid)], capture_output=True)
-        time.sleep(1.5)
+        time.sleep(2.0)
         # Check if llama-server.exe is still alive
         check_llama = subprocess.run(["tasklist", "/FI", "IMAGENAME eq llama-server.exe", "/FO", "CSV", "/NH"],
                                      capture_output=True, text=True)
@@ -158,11 +178,16 @@ def main():
     print("===============================================================")
     print("       ODS Windows Native Supervisor Test Suite                ")
     print("===============================================================")
-    run_test_hash_mismatch()
-    run_test_port_in_use()
-    run_test_corrupt_model()
     run_test_happy_path()
+    time.sleep(1.0)
+    run_test_port_in_use()
+    time.sleep(0.5)
+    run_test_hash_mismatch()
+    time.sleep(0.5)
+    run_test_corrupt_model()
+    time.sleep(0.5)
     run_test_child_killed_mid_run()
+    time.sleep(1.0)
     run_test_supervisor_killed_no_orphans()
     print("\n===============================================================")
     print("SUCCESS: All 6 supervisor integration & failure tests passed!  ")
