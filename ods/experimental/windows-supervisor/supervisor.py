@@ -198,17 +198,47 @@ class WindowsNativeSupervisor:
         except Exception:
             return ""
 
+    def _download(self, url: str, dest: Path):
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        part_path = dest.with_suffix(dest.suffix + ".part")
+        if part_path.exists():
+            try:
+                part_path.unlink()
+            except OSError:
+                pass
+        req = urllib.request.Request(url, headers={"User-Agent": "ODS-Supervisor/1.0"})
+        with urllib.request.urlopen(req, timeout=120) as resp, open(part_path, "wb") as f:
+            while chunk := resp.read(1024 * 1024):
+                f.write(chunk)
+        if os.environ.get("ODS_TEST_FORCE_BAD_HASH") == "1":
+            with open(part_path, "wb") as f:
+                f.write(b"CORRUPTED_DOWNLOAD_PAYLOAD")
+        if dest.exists():
+            try:
+                dest.unlink()
+            except OSError:
+                pass
+        part_path.replace(dest)
+
     def download_and_verify(self, force: bool = False):
         # 1. Download and verify llama-server
         zip_path = self.data_dir / LLAMA_SERVER_PIN["asset"]
         if force or not zip_path.exists():
             print(f"Downloading {LLAMA_SERVER_PIN['url']}...")
             self._download(LLAMA_SERVER_PIN["url"], zip_path)
-
-        actual_zip_sha = compute_sha256(zip_path)
-        if actual_zip_sha != LLAMA_SERVER_PIN["sha256"]:
-            print(f"ERROR: SHA-256 mismatch for runtime archive! Expected {LLAMA_SERVER_PIN['sha256']}, got {actual_zip_sha}", file=sys.stderr)
-            sys.exit(2)
+            actual_zip_sha = compute_sha256(zip_path)
+            if actual_zip_sha != LLAMA_SERVER_PIN["sha256"]:
+                print(f"ERROR: SHA-256 mismatch for runtime archive! Expected {LLAMA_SERVER_PIN['sha256']}, got {actual_zip_sha}", file=sys.stderr)
+                sys.exit(2)
+        else:
+            actual_zip_sha = compute_sha256(zip_path)
+            if actual_zip_sha != LLAMA_SERVER_PIN["sha256"]:
+                print(f"Notice: Cached runtime archive {zip_path.name} SHA-256 mismatch ({actual_zip_sha[:12]}... != {LLAMA_SERVER_PIN['sha256'][:12]}...); re-downloading...", file=sys.stderr)
+                self._download(LLAMA_SERVER_PIN["url"], zip_path)
+                actual_zip_sha = compute_sha256(zip_path)
+                if actual_zip_sha != LLAMA_SERVER_PIN["sha256"]:
+                    print(f"ERROR: SHA-256 mismatch for runtime archive after re-download! Expected {LLAMA_SERVER_PIN['sha256']}, got {actual_zip_sha}", file=sys.stderr)
+                    sys.exit(2)
 
         with zipfile.ZipFile(zip_path, "r") as zf:
             zf.extractall(self.runtime_dir)
@@ -231,21 +261,22 @@ class WindowsNativeSupervisor:
         if force or not model_path.exists():
             print(f"Downloading {MODEL_PIN['url']}...")
             self._download(MODEL_PIN["url"], model_path)
-
-        actual_model_sha = compute_sha256(model_path)
-        if actual_model_sha != MODEL_PIN["sha256"]:
-            print(f"ERROR: SHA-256 mismatch for GGUF model! Expected {MODEL_PIN['sha256']}, got {actual_model_sha}", file=sys.stderr)
-            sys.exit(2)
+            actual_model_sha = compute_sha256(model_path)
+            if actual_model_sha != MODEL_PIN["sha256"]:
+                print(f"ERROR: SHA-256 mismatch for GGUF model! Expected {MODEL_PIN['sha256']}, got {actual_model_sha}", file=sys.stderr)
+                sys.exit(2)
+        else:
+            actual_model_sha = compute_sha256(model_path)
+            if actual_model_sha != MODEL_PIN["sha256"]:
+                print(f"Notice: Cached model {model_path.name} SHA-256 mismatch ({actual_model_sha[:12]}... != {MODEL_PIN['sha256'][:12]}...); re-downloading...", file=sys.stderr)
+                self._download(MODEL_PIN["url"], model_path)
+                actual_model_sha = compute_sha256(model_path)
+                if actual_model_sha != MODEL_PIN["sha256"]:
+                    print(f"ERROR: SHA-256 mismatch for GGUF model after re-download! Expected {MODEL_PIN['sha256']}, got {actual_model_sha}", file=sys.stderr)
+                    sys.exit(2)
 
         print("SUCCESS: Runtime and Model verified with matching cryptographic hashes.")
         return llama_exe, model_path
-
-    def _download(self, url: str, dest: Path):
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        req = urllib.request.Request(url, headers={"User-Agent": "ODS-Supervisor/1.0"})
-        with urllib.request.urlopen(req, timeout=120) as resp, open(dest, "wb") as f:
-            while chunk := resp.read(1024 * 1024):
-                f.write(chunk)
 
     def start(self, llama_exe: Path, model_path: Path):
         # 1. Pre-flight port checks
@@ -422,7 +453,10 @@ class WindowsNativeSupervisor:
                 remaining = max(0.001, timeout - (time.perf_counter() - t0))
                 try:
                     proc.wait(timeout=remaining)
-                    print(f"{name} exited cleanly with code {proc.returncode}.")
+                    if proc.returncode == 0:
+                        print(f"{name} exited cleanly with code 0.")
+                    else:
+                        print(f"{name} exited with code {proc.returncode}.")
                 except subprocess.TimeoutExpired:
                     forced_termination = True
                     print(f"Warning: {name} did not exit within {timeout}s; terminating forcefully.", file=sys.stderr)

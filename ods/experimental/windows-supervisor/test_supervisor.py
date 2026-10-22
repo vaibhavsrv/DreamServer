@@ -165,33 +165,47 @@ def run_test_port_in_use():
         sock.close()
 
 def run_test_hash_mismatch():
-    print("\n[TEST 3/7] Testing Hash Mismatch Rejection...")
+    print("\n[TEST 3/7] Testing Cached Hash Mismatch Re-Download Healing...")
     bad_data = DATA_DIR / "bad_hash_data"
     bad_data.mkdir(parents=True, exist_ok=True)
-    (bad_data / "llama-b9014-bin-win-cpu-x64.zip").write_text("corrupted content", encoding="utf-8")
 
-    cmd = [PYTHON, str(SUPERVISOR_SCRIPT), "--data-dir", str(bad_data)]
+    # Pre-copy model from shared_data to avoid redundant 105MB re-download
+    shared_models = DATA_DIR / "shared_data" / "models"
+    bad_models = bad_data / "models"
+    bad_models.mkdir(parents=True, exist_ok=True)
+    src_model = shared_models / "SmolLM2-135M-Instruct-Q4_K_M.gguf"
+    if src_model.exists():
+        import shutil
+        shutil.copy2(src_model, bad_models / "SmolLM2-135M-Instruct-Q4_K_M.gguf")
+
+    # Write corrupt cached archive
+    bad_zip = bad_data / "llama-b9014-bin-win-cpu-x64.zip"
+    bad_zip.write_text("corrupted cached content", encoding="utf-8")
+
+    cmd = [PYTHON, "-u", str(SUPERVISOR_SCRIPT), "--data-dir", str(bad_data), "--stop-after-ready"]
     res = subprocess.run(cmd, capture_output=True, text=True)
+    print(f"Exit code: {res.returncode}")
+    if res.stderr:
+        print(f"Stderr snippet:\n{res.stderr[-300:].strip()}")
+    assert res.returncode == 0, f"Expected exit code 0 after re-download healing, got {res.returncode}\nStderr: {res.stderr}"
+    assert "SHA-256 mismatch" in res.stderr and "re-downloading" in res.stderr, "Expected re-download notice in stderr"
+    assert bad_zip.stat().st_size == 15917797, f"Corrupted file was not replaced: {bad_zip.stat().st_size}"
+    print("PASS: Cached hash mismatch detected, re-downloaded to .part, and healed successfully.")
+
+def run_test_corrupt_model():
+    print("\n[TEST 4/7] Testing Persistent Hash Mismatch Rejection (Exit Code 2)...")
+    corrupt_data = DATA_DIR / "corrupt_data"
+    corrupt_data.mkdir(parents=True, exist_ok=True)
+    env = os.environ.copy()
+    env["ODS_TEST_FORCE_BAD_HASH"] = "1"
+
+    cmd = [PYTHON, "-u", str(SUPERVISOR_SCRIPT), "--data-dir", str(corrupt_data)]
+    res = subprocess.run(cmd, env=env, capture_output=True, text=True)
     print(f"Exit code: {res.returncode}")
     print(f"Stderr: {res.stderr.strip()}")
     assert res.returncode == 2, f"Expected exit code 2, got {res.returncode}"
     assert "SHA-256 mismatch" in res.stderr, "Expected SHA-256 mismatch in stderr"
-    print("PASS: Hash mismatch rejected cleanly.")
-
-def run_test_corrupt_model():
-    print("\n[TEST 4/7] Testing Corrupt Model Rejection...")
-    corrupt_data = DATA_DIR / "corrupt_data"
-    models_dir = corrupt_data / "models"
-    models_dir.mkdir(parents=True, exist_ok=True)
-    (models_dir / "SmolLM2-135M-Instruct-Q4_K_M.gguf").write_bytes(b"BAD_MAGIC_HEADER_1234567890")
-
-    cmd = [PYTHON, str(SUPERVISOR_SCRIPT), "--data-dir", str(corrupt_data)]
-    res = subprocess.run(cmd, capture_output=True, text=True)
-    print(f"Exit code: {res.returncode}")
-    print(f"Stderr: {res.stderr.strip()}")
-    assert res.returncode == 2, f"Expected exit code 2, got {res.returncode}"
-    assert "SHA-256 mismatch for GGUF model" in res.stderr, "Expected model SHA-256 mismatch message"
-    print("PASS: Corrupt model rejected cleanly with exit code 2.")
+    print("PASS: Persistent hash mismatch rejected cleanly with exit code 2.")
 
 def run_test_child_killed_mid_run():
     print("\n[TEST 5/7] Testing Child Killed Mid-Run Detection (Assert Exit 6, Kill by PID Only)...")
