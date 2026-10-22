@@ -11,6 +11,7 @@ import time
 import json
 import signal
 import socket
+import secrets
 import hashlib
 import zipfile
 import urllib.request
@@ -139,19 +140,57 @@ class Win32JobManager:
 
 class WindowsNativeSupervisor:
     """Supervises llama-server and dashboard-api native execution."""
-    def __init__(self, data_dir: Path, llama_port: int = 8080, dashboard_port: int = 3002):
+    def __init__(self, data_dir: Path, llama_port: int = 8080, dashboard_port: int = 3002,
+                 api_key: str = None, stop_timeout: float = 5.0):
         self.data_dir = data_dir.resolve()
         self.llama_port = llama_port
         self.dashboard_port = dashboard_port
+        self.api_key = api_key or secrets.token_hex(16)
+        self.stop_timeout = stop_timeout
         self.job = Win32JobManager()
         self.llama_proc = None
         self.dashboard_proc = None
         self.running = False
-        
+
         self.runtime_dir = self.data_dir / "runtime"
         self.models_dir = self.data_dir / "models"
+        self.logs_dir = self.data_dir / "logs"
+        self.pids_file = self.data_dir / "pids.json"
+        self.key_file = self.data_dir / "api_key.txt"
+
         self.runtime_dir.mkdir(parents=True, exist_ok=True)
         self.models_dir.mkdir(parents=True, exist_ok=True)
+        self.logs_dir.mkdir(parents=True, exist_ok=True)
+
+        self.llama_log_path = self.logs_dir / "llama_server.log"
+        self.dashboard_log_path = self.logs_dir / "dashboard_api.log"
+        self.llama_log_file = None
+        self.dashboard_log_file = None
+
+        # Write API key to disk for caller consumption
+        self.key_file.write_text(self.api_key, encoding="utf-8")
+
+    def _write_pids(self, ready: bool = False):
+        pids_data = {
+            "supervisor_pid": os.getpid(),
+            "llama_pid": self.llama_proc.pid if self.llama_proc else None,
+            "dashboard_pid": self.dashboard_proc.pid if self.dashboard_proc else None,
+            "llama_port": self.llama_port,
+            "dashboard_port": self.dashboard_port,
+            "api_key": self.api_key,
+            "ready": ready
+        }
+        self.pids_file.write_text(json.dumps(pids_data, indent=2), encoding="utf-8")
+
+    def _tail_log(self, path: Path, max_lines: int = 25) -> str:
+        if not path.exists():
+            return ""
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                lines = f.readlines()
+                return "".join(lines[-max_lines:])
+        except Exception:
+            return ""
 
     def download_and_verify(self, force: bool = False):
         # 1. Download and verify llama-server
@@ -159,15 +198,15 @@ class WindowsNativeSupervisor:
         if force or not zip_path.exists():
             print(f"Downloading {LLAMA_SERVER_PIN['url']}...")
             self._download(LLAMA_SERVER_PIN["url"], zip_path)
-            
+
         actual_zip_sha = compute_sha256(zip_path)
         if actual_zip_sha != LLAMA_SERVER_PIN["sha256"]:
             print(f"ERROR: SHA-256 mismatch for runtime archive! Expected {LLAMA_SERVER_PIN['sha256']}, got {actual_zip_sha}", file=sys.stderr)
             sys.exit(2)
-            
+
         with zipfile.ZipFile(zip_path, "r") as zf:
             zf.extractall(self.runtime_dir)
-            
+
         llama_exe = self.runtime_dir / LLAMA_SERVER_PIN["exe_name"]
         if not llama_exe.exists():
             matches = list(self.runtime_dir.glob(f"**/{LLAMA_SERVER_PIN['exe_name']}"))
@@ -175,7 +214,7 @@ class WindowsNativeSupervisor:
                 print(f"ERROR: {LLAMA_SERVER_PIN['exe_name']} missing from extracted archive!", file=sys.stderr)
                 sys.exit(2)
             llama_exe = matches[0]
-            
+
         actual_exe_sha = compute_sha256(llama_exe)
         if actual_exe_sha != LLAMA_SERVER_PIN["exe_sha256"]:
             print(f"ERROR: SHA-256 mismatch for llama-server.exe! Expected {LLAMA_SERVER_PIN['exe_sha256']}, got {actual_exe_sha}", file=sys.stderr)
@@ -186,7 +225,7 @@ class WindowsNativeSupervisor:
         if force or not model_path.exists():
             print(f"Downloading {MODEL_PIN['url']}...")
             self._download(MODEL_PIN["url"], model_path)
-            
+
         actual_model_sha = compute_sha256(model_path)
         if actual_model_sha != MODEL_PIN["sha256"]:
             print(f"ERROR: SHA-256 mismatch for GGUF model! Expected {MODEL_PIN['sha256']}, got {actual_model_sha}", file=sys.stderr)
@@ -213,6 +252,10 @@ class WindowsNativeSupervisor:
 
         creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
 
+        # Open log files for child redirection
+        self.llama_log_file = open(self.llama_log_path, "a", encoding="utf-8")
+        self.dashboard_log_file = open(self.dashboard_log_path, "a", encoding="utf-8")
+
         # 2. Launch llama-server.exe
         llama_cmd = [
             str(llama_exe),
@@ -225,10 +268,10 @@ class WindowsNativeSupervisor:
             "--threads", "4",
             "--no-webui"
         ]
-        print(f"Starting llama-server.exe on port {self.llama_port}...")
+        print(f"Starting llama-server.exe on port {self.llama_port} (logs: {self.llama_log_path.name})...")
         self.llama_proc = subprocess.Popen(
             llama_cmd,
-            stdout=subprocess.PIPE,
+            stdout=self.llama_log_file,
             stderr=subprocess.STDOUT,
             creationflags=creationflags
         )
@@ -239,7 +282,7 @@ class WindowsNativeSupervisor:
         repo_root = Path(__file__).resolve().parents[3]
         api_dir = repo_root / "ods" / "extensions" / "services" / "dashboard-api"
         env = os.environ.copy()
-        env["DASHBOARD_API_KEY"] = "supervisor-native-key"
+        env["DASHBOARD_API_KEY"] = self.api_key
         env["ODS_INSTALL_DIR"] = str(repo_root / "ods")
         env["ODS_DATA_DIR"] = str(self.data_dir / "ods_data")
         env["ODS_EXTENSIONS_DIR"] = str(repo_root / "ods" / "extensions" / "services")
@@ -258,16 +301,19 @@ class WindowsNativeSupervisor:
             "--port", str(self.dashboard_port),
             "--log-level", "warning"
         ]
-        print(f"Starting dashboard-api on port {self.dashboard_port}...")
+        print(f"Starting dashboard-api on port {self.dashboard_port} (logs: {self.dashboard_log_path.name})...")
         self.dashboard_proc = subprocess.Popen(
             api_cmd,
             env=env,
-            stdout=subprocess.PIPE,
+            stdout=self.dashboard_log_file,
             stderr=subprocess.STDOUT,
             creationflags=creationflags
         )
         self.job.assign_process(self.dashboard_proc.pid)
         print(f"Assigned dashboard-api (PID {self.dashboard_proc.pid}) to Win32 Job Object.")
+
+        # Write initial PIDs
+        self._write_pids(ready=False)
 
         # 4. Wait for readiness
         self._wait_for_health()
@@ -277,7 +323,7 @@ class WindowsNativeSupervisor:
         t0 = time.perf_counter()
         llama_url = f"http://127.0.0.1:{self.llama_port}/health"
         dash_url = f"http://127.0.0.1:{self.dashboard_port}/health"
-        headers = {"Authorization": "Bearer supervisor-native-key"}
+        headers = {"Authorization": f"Bearer {self.api_key}"}
 
         llama_ready = False
         dash_ready = False
@@ -285,13 +331,13 @@ class WindowsNativeSupervisor:
         while time.perf_counter() - t0 < timeout:
             # Check for premature child death
             if self.llama_proc.poll() is not None:
-                out = self.llama_proc.stdout.read().decode("utf-8", "replace") if self.llama_proc.stdout else ""
-                print(f"ERROR: Child process llama-server.exe exited prematurely with exit code {self.llama_proc.returncode}!\n{out}", file=sys.stderr)
+                log_tail = self._tail_log(self.llama_log_path)
+                print(f"ERROR: Child process llama-server.exe exited prematurely with exit code {self.llama_proc.returncode}!\nLogs:\n{log_tail}", file=sys.stderr)
                 self.stop()
                 sys.exit(5)
             if self.dashboard_proc.poll() is not None:
-                out = self.dashboard_proc.stdout.read().decode("utf-8", "replace") if self.dashboard_proc.stdout else ""
-                print(f"ERROR: Child process dashboard-api exited prematurely with exit code {self.dashboard_proc.returncode}!\n{out}", file=sys.stderr)
+                log_tail = self._tail_log(self.dashboard_log_path)
+                print(f"ERROR: Child process dashboard-api exited prematurely with exit code {self.dashboard_proc.returncode}!\nLogs:\n{log_tail}", file=sys.stderr)
                 self.stop()
                 sys.exit(5)
 
@@ -316,6 +362,7 @@ class WindowsNativeSupervisor:
 
             if llama_ready and dash_ready:
                 print(f"SUCCESS: Both processes healthy and responding on loopback in {time.perf_counter() - t0:.2f}s.")
+                self._write_pids(ready=True)
                 return
 
             time.sleep(0.4)
@@ -325,7 +372,7 @@ class WindowsNativeSupervisor:
         sys.exit(5)
 
     def monitor_until_interrupted(self):
-        """Monitors child processes. Exits non-zero if either dies."""
+        """Monitors child processes. Exits code 6 if either dies."""
         try:
             while self.running:
                 if self.llama_proc and self.llama_proc.poll() is not None:
@@ -338,15 +385,18 @@ class WindowsNativeSupervisor:
                     print(f"ERROR: Child process dashboard-api (PID {self.dashboard_proc.pid}) died unexpectedly with exit code {code}.", file=sys.stderr)
                     self.stop()
                     sys.exit(6)
-                time.sleep(0.5)
+                time.sleep(0.4)
         except KeyboardInterrupt:
             print("\nReceived interrupt. Stopping gracefully...")
             self.stop()
             sys.exit(0)
 
-    def stop(self, timeout: float = 5.0):
+    def stop(self, timeout: float = None):
+        if timeout is None:
+            timeout = self.stop_timeout
         self.running = False
         print("Stopping supervised processes gracefully...")
+
         # Step 1: Send cooperative break/interrupt signal
         for name, proc in [("dashboard-api", self.dashboard_proc), ("llama-server", self.llama_proc)]:
             if proc and proc.poll() is None:
@@ -360,19 +410,43 @@ class WindowsNativeSupervisor:
 
         # Step 2: Await cooperative exit up to timeout
         t0 = time.perf_counter()
+        forced_termination = False
         for name, proc in [("dashboard-api", self.dashboard_proc), ("llama-server", self.llama_proc)]:
             if proc and proc.poll() is None:
-                remaining = max(0.1, timeout - (time.perf_counter() - t0))
+                remaining = max(0.001, timeout - (time.perf_counter() - t0))
                 try:
                     proc.wait(timeout=remaining)
                     print(f"{name} exited cleanly with code {proc.returncode}.")
                 except subprocess.TimeoutExpired:
+                    forced_termination = True
                     print(f"Warning: {name} did not exit within {timeout}s; terminating forcefully.", file=sys.stderr)
-                    proc.kill()
-                    proc.wait()
+                    try:
+                        proc.kill()
+                        proc.wait(timeout=2.0)
+                    except Exception:
+                        pass
 
         # Step 3: Final Win32 Job Object close (guarantees zero orphaned child processes)
         self.job.close()
+
+        # Flush and close child log file handles
+        if self.llama_log_file and not self.llama_log_file.closed:
+            try:
+                self.llama_log_file.flush()
+                self.llama_log_file.close()
+            except Exception:
+                pass
+        if self.dashboard_log_file and not self.dashboard_log_file.closed:
+            try:
+                self.dashboard_log_file.flush()
+                self.dashboard_log_file.close()
+            except Exception:
+                pass
+
+        if forced_termination:
+            print("Stop mode: FORCED (cooperative timeout expired, terminated forcefully).")
+        else:
+            print("Stop mode: GRACEFUL (all processes exited cooperatively before timeout).")
         print("Win32 Job Object closed; child processes terminated cleanly.")
 
 def main():
@@ -381,11 +455,19 @@ def main():
     parser.add_argument("--data-dir", default="./data/supervisor_data", help="Data directory")
     parser.add_argument("--llama-port", type=int, default=8080)
     parser.add_argument("--dashboard-port", type=int, default=3002)
+    parser.add_argument("--api-key", default=None, help="Dashboard API Key (generated if omitted)")
+    parser.add_argument("--stop-timeout", type=float, default=5.0, help="Graceful stop timeout in seconds")
     parser.add_argument("--run-probe", action="store_true", help="Start, verify health & chat, then stop")
     args = parser.parse_args()
 
-    sup = WindowsNativeSupervisor(Path(args.data_dir), args.llama_port, args.dashboard_port)
-    
+    sup = WindowsNativeSupervisor(
+        Path(args.data_dir),
+        llama_port=args.llama_port,
+        dashboard_port=args.dashboard_port,
+        api_key=args.api_key,
+        stop_timeout=args.stop_timeout
+    )
+
     # Register signal handlers
     def handle_signal(sig, frame):
         sup.stop()
@@ -393,6 +475,7 @@ def main():
     signal.signal(signal.SIGINT, handle_signal)
     if hasattr(signal, "SIGTERM"):
         signal.signal(signal.SIGTERM, handle_signal)
+
     # Pre-flight port availability check
     if not verify_port_available(args.llama_port):
         print(f"ERROR: Port {args.llama_port} is already in use by another process.", file=sys.stderr)
@@ -411,7 +494,7 @@ def main():
         req = urllib.request.Request(
             f"http://127.0.0.1:{args.dashboard_port}/api/chat",
             data=json.dumps(chat_payload).encode("utf-8"),
-            headers={"Authorization": "Bearer supervisor-native-key", "Content-Type": "application/json"}
+            headers={"Authorization": f"Bearer {sup.api_key}", "Content-Type": "application/json"}
         )
         with urllib.request.urlopen(req, timeout=15) as resp:
             data = json.loads(resp.read().decode("utf-8"))
