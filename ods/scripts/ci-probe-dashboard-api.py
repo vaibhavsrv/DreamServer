@@ -22,17 +22,17 @@ def run_import_host_agent():
     repo_root = Path(__file__).resolve().parents[2]
     bin_dir = repo_root / "ods" / "bin"
     agent_script = bin_dir / "ods-host-agent.py"
-    
+
     stub_home = repo_root / "data" / "stub_ods"
     stub_home.mkdir(parents=True, exist_ok=True)
-    
+
     os.environ["ODS_HOME"] = str(stub_home)
     os.environ["ODS_HOST_AGENT_TOKEN"] = "test-token-ci"
     sys.path.insert(0, str(bin_dir))
-    
+
     print(f"Target script: {agent_script}")
     print(f"ODS_HOME: {os.environ['ODS_HOME']}")
-    
+
     try:
         import importlib.util
         spec = importlib.util.spec_from_file_location("ods_host_agent", str(agent_script))
@@ -53,13 +53,13 @@ def run_probe_dashboard_api():
     api_dir = repo_root / "ods" / "extensions" / "services" / "dashboard-api"
     stub_data = repo_root / "data" / "stub_ods_data"
     stub_data.mkdir(parents=True, exist_ok=True)
-    
+
     # Bind free port
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.bind(("127.0.0.1", 0))
     port = s.getsockname()[1]
     s.close()
-    
+
     env = os.environ.copy()
     env["DASHBOARD_API_KEY"] = "ci-test-key-999"
     env["ODS_INSTALL_DIR"] = str(repo_root / "ods")
@@ -67,7 +67,7 @@ def run_probe_dashboard_api():
     env["ODS_EXTENSIONS_DIR"] = str(repo_root / "ods" / "extensions" / "services")
     env["PYTHONPATH"] = str(api_dir)
     env["SERVICE_HOST"] = "127.0.0.1"
-    
+
     print(f"Starting uvicorn on 127.0.0.1:{port} from {api_dir}...")
     cmd = [
         sys.executable, "-m", "uvicorn", "main:app",
@@ -76,15 +76,15 @@ def run_probe_dashboard_api():
         "--port", str(port),
         "--log-level", "info"
     ]
-    
+
     proc = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    
+
     # Poll for readiness
     headers = {"Authorization": "Bearer ci-test-key-999"}
     health_url = f"http://127.0.0.1:{port}/health"
     ready = False
     start_time = time.time()
-    
+
     print(f"Polling {health_url} for up to 25s...")
     while time.time() - start_time < 25:
         if proc.poll() is not None:
@@ -101,7 +101,7 @@ def run_probe_dashboard_api():
                     break
         except Exception:
             time.sleep(0.5)
-            
+
     if not ready:
         print("ERROR: uvicorn did not become ready within 25s!", file=sys.stderr)
         proc.terminate()
@@ -112,19 +112,19 @@ def run_probe_dashboard_api():
         except Exception:
             proc.kill()
         return 1
-        
+
     print(f"Uvicorn is ready on port {port} (startup took {time.time() - start_time:.2f}s). Testing endpoints...")
-    
+
     endpoints = [
         "/health",
         "/status",
         "/services",
         "/api/preflight/required-ports"
     ]
-    
+
     results = {}
     has_failure = False
-    
+
     for ep in endpoints:
         url = f"http://127.0.0.1:{port}{ep}"
         try:
@@ -142,21 +142,21 @@ def run_probe_dashboard_api():
             results[ep] = {"error": str(e)}
             print(f"  GET {ep} -> FAILED: {e}", file=sys.stderr)
             has_failure = True
-            
+
     # Terminate process cleanly
     proc.terminate()
     try:
         proc.wait(timeout=5)
     except Exception:
         proc.kill()
-        
+
     print("\n--- Summary of endpoint tests ---")
     print(json.dumps(results, indent=2))
-    
+
     if has_failure:
         print("At least one endpoint returned an error.", file=sys.stderr)
         return 1
-        
+
     print("SUCCESS: All 4 endpoints answered cleanly without Docker.")
     return 0
 
