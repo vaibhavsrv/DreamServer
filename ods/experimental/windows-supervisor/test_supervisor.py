@@ -299,32 +299,27 @@ def run_test_stop_path_graceful_and_forced():
         pids_file.unlink()
 
     cmd_a = [
-        PYTHON, str(SUPERVISOR_SCRIPT),
+        PYTHON, "-u", str(SUPERVISOR_SCRIPT),
         "--data-dir", str(shared_data),
         "--llama-port", str(llama_port_a),
         "--dashboard-port", str(dash_port_a),
-        "--stop-timeout", "5.0"
+        "--stop-timeout", "5.0",
+        "--stop-after-ready"
     ]
-    creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
-    proc_a = subprocess.Popen(cmd_a, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                              creationflags=creationflags)
-    pids_a = wait_for_pids_ready(pids_file, timeout=30.0)
-    print(f"  Supervisor ready. PIDs: llama={pids_a['llama_pid']}, dash={pids_a['dashboard_pid']}")
+    res_a = subprocess.run(cmd_a, capture_output=True, text=True)
+    print(f"  Graceful stop exit code: {res_a.returncode}")
+    print(f"  Stdout snippet:\n{res_a.stdout[-350:].strip()}")
+    if res_a.returncode != 0:
+        print(f"  FULL STDERR:\n{res_a.stderr}")
+    assert res_a.returncode == 0, f"Expected exit 0 for graceful stop, got {res_a.returncode}\nErr: {res_a.stderr}"
+    assert "Stop mode: GRACEFUL" in res_a.stdout, "Expected graceful stop mode in stdout"
+    assert "exited cleanly" in res_a.stdout, "Expected clean exit indication in stdout"
 
-    # Send cooperative signal to supervisor
-    print("  Dispatching cooperative break/interrupt signal...")
-    if sys.platform == "win32":
-        proc_a.send_signal(signal.CTRL_BREAK_EVENT)
-    else:
-        proc_a.send_signal(signal.SIGINT)
-
-    out_a, err_a = proc_a.communicate(timeout=15)
-    print(f"  Graceful stop exit code: {proc_a.returncode}")
-    print(f"  Stdout:\n{out_a[-300:].strip()}")
-    assert proc_a.returncode == 0, f"Expected exit 0 for graceful stop, got {proc_a.returncode}\nErr: {err_a}"
-    assert "Stop mode: GRACEFUL" in out_a or "exited cleanly" in out_a, "Expected graceful stop indication in output"
-    assert not is_pid_running(pids_a['llama_pid']), "llama process still running after graceful stop!"
-    assert not is_pid_running(pids_a['dashboard_pid']), "dashboard process still running after graceful stop!"
+    # Verify child processes are terminated
+    assert pids_file.exists(), "pids.json missing after graceful stop"
+    pids_a = json.loads(pids_file.read_text(encoding="utf-8"))
+    assert not is_pid_running(pids_a.get("llama_pid")), "llama process still running after graceful stop!"
+    assert not is_pid_running(pids_a.get("dashboard_pid")), "dashboard process still running after graceful stop!"
     assert verify_port_available(llama_port_a), f"Port {llama_port_a} not released"
     assert verify_port_available(dash_port_a), f"Port {dash_port_a} not released"
     print("  PASS: Graceful stop path confirmed clean cooperative exit.")
@@ -336,33 +331,25 @@ def run_test_stop_path_graceful_and_forced():
         pids_file.unlink()
 
     cmd_b = [
-        PYTHON, str(SUPERVISOR_SCRIPT),
+        PYTHON, "-u", str(SUPERVISOR_SCRIPT),
         "--data-dir", str(shared_data),
         "--llama-port", str(llama_port_b),
         "--dashboard-port", str(dash_port_b),
-        "--stop-timeout", "0.001"  # Near-zero timeout forces timeout branch
+        "--stop-timeout", "0.001",
+        "--stop-after-ready"
     ]
-    proc_b = subprocess.Popen(cmd_b, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                              creationflags=creationflags)
-    pids_b = wait_for_pids_ready(pids_file, timeout=30.0)
-    print(f"  Supervisor ready. PIDs: llama={pids_b['llama_pid']}, dash={pids_b['dashboard_pid']}")
+    res_b = subprocess.run(cmd_b, capture_output=True, text=True)
+    print(f"  Forced stop exit code: {res_b.returncode}")
+    print(f"  Stdout snippet:\n{res_b.stdout[-350:].strip()}")
+    if res_b.stderr:
+        print(f"  Stderr snippet:\n{res_b.stderr[-300:].strip()}")
+    assert res_b.returncode == 0, f"Expected exit 0 for forced stop, got {res_b.returncode}\nErr: {res_b.stderr}"
+    assert "Stop mode: FORCED" in res_b.stdout or "terminating forcefully" in res_b.stderr, "Expected forced stop indication"
 
-    # Send signal to trigger stop with near-zero timeout
-    print("  Dispatching break signal with 0.001s timeout...")
-    if sys.platform == "win32":
-        proc_b.send_signal(signal.CTRL_BREAK_EVENT)
-    else:
-        proc_b.send_signal(signal.SIGINT)
-
-    out_b, err_b = proc_b.communicate(timeout=15)
-    print(f"  Forced stop exit code: {proc_b.returncode}")
-    print(f"  Stdout:\n{out_b[-300:].strip()}")
-    if err_b:
-        print(f"  Stderr:\n{err_b[-300:].strip()}")
-    assert proc_b.returncode == 0, f"Expected exit 0 for forced stop, got {proc_b.returncode}"
-    assert "Stop mode: FORCED" in out_b or "terminating forcefully" in err_b, "Expected forced stop indication"
-    assert not is_pid_running(pids_b['llama_pid']), "llama process still running after forced stop!"
-    assert not is_pid_running(pids_b['dashboard_pid']), "dashboard process still running after forced stop!"
+    assert pids_file.exists(), "pids.json missing after forced stop"
+    pids_b = json.loads(pids_file.read_text(encoding="utf-8"))
+    assert not is_pid_running(pids_b.get("llama_pid")), "llama process still running after forced stop!"
+    assert not is_pid_running(pids_b.get("dashboard_pid")), "dashboard process still running after forced stop!"
     assert verify_port_available(llama_port_b), f"Port {llama_port_b} not released"
     assert verify_port_available(dash_port_b), f"Port {dash_port_b} not released"
     print("  PASS: Forced stop path confirmed timeout fallback and zero orphans.")

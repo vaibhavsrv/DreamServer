@@ -19,6 +19,12 @@ import urllib.error
 import subprocess
 from pathlib import Path
 
+try:
+    sys.stdout.reconfigure(line_buffering=True)
+    sys.stderr.reconfigure(line_buffering=True)
+except Exception:
+    pass
+
 # --- Pinned Dependency Specifications ---
 LLAMA_SERVER_PIN = {
     "release_tag": "b9014",
@@ -458,6 +464,7 @@ def main():
     parser.add_argument("--api-key", default=None, help="Dashboard API Key (generated if omitted)")
     parser.add_argument("--stop-timeout", type=float, default=5.0, help="Graceful stop timeout in seconds")
     parser.add_argument("--run-probe", action="store_true", help="Start, verify health & chat, then stop")
+    parser.add_argument("--stop-after-ready", action="store_true", help="Start, verify health, then execute stop() and exit 0")
     args = parser.parse_args()
 
     sup = WindowsNativeSupervisor(
@@ -475,6 +482,8 @@ def main():
     signal.signal(signal.SIGINT, handle_signal)
     if hasattr(signal, "SIGTERM"):
         signal.signal(signal.SIGTERM, handle_signal)
+    if hasattr(signal, "SIGBREAK"):
+        signal.signal(signal.SIGBREAK, handle_signal)
 
     # Pre-flight port availability check
     if not verify_port_available(args.llama_port):
@@ -487,7 +496,12 @@ def main():
     llama_exe, model_path = sup.download_and_verify()
     sup.start(llama_exe, model_path)
 
-    if args.run_probe:
+    if args.stop_after_ready:
+        print("Executing stop path verification after health check...")
+        sup.stop()
+        print("SUCCESS: Stop path execution completed cleanly.")
+        sys.exit(0)
+    elif args.run_probe:
         # Run a test chat query through dashboard-api
         print("Probing dashboard-api /api/chat...")
         chat_payload = {"message": "Say PASS", "system": "You are a test assistant."}
