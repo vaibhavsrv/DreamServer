@@ -2,9 +2,10 @@ name: Windows Native Supervisor Integration
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - experiment/windows-native-supervisor
+  pull_request:
+    paths:
+      - 'ods/experimental/windows-supervisor/**'
+      - '.github/workflows/experiment-windows-supervisor.yml'
 
 permissions:
   contents: read
@@ -28,6 +29,14 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r ods/extensions/services/dashboard-api/requirements.txt
           pip install uvicorn httpx requests pyyaml
+
+      - name: Cache Runtime and Model Assets
+        uses: actions/cache@v4
+        with:
+          path: ods/experimental/windows-supervisor/test_data/shared_data
+          key: windows-supervisor-assets-b9014-smollm2-${{ hashFiles('ods/experimental/windows-supervisor/supervisor.py') }}
+          restore-keys: |
+            windows-supervisor-assets-b9014-smollm2-
 
       - name: Run Windows Native Supervisor Test Suite
         shell: bash

@@ -60,13 +60,6 @@ def verify_port_available(port: int, host: str = "127.0.0.1") -> bool:
     except OSError:
         return False
 
-def verify_gguf_header(file_path: Path) -> bool:
-    if not file_path.is_file() or file_path.stat().st_size < 4:
-        return False
-    with open(file_path, "rb") as f:
-        magic = f.read(4)
-        return magic == b"GGUF"
-
 class Win32JobManager:
     """Manages an NT Job Object ensuring all assigned processes terminate when closed."""
     def __init__(self):
@@ -199,10 +192,6 @@ class WindowsNativeSupervisor:
             print(f"ERROR: SHA-256 mismatch for GGUF model! Expected {MODEL_PIN['sha256']}, got {actual_model_sha}", file=sys.stderr)
             sys.exit(2)
 
-        if not verify_gguf_header(model_path):
-            print(f"ERROR: Model file {model_path} has invalid GGUF magic header!", file=sys.stderr)
-            sys.exit(4)
-
         print("SUCCESS: Runtime and Model verified with matching cryptographic hashes.")
         return llama_exe, model_path
 
@@ -222,12 +211,9 @@ class WindowsNativeSupervisor:
             print(f"ERROR: Port {self.dashboard_port} is already in use by another process.", file=sys.stderr)
             sys.exit(3)
 
-        # 2. Verify model header
-        if not verify_gguf_header(model_path):
-            print(f"ERROR: Model file is corrupted or invalid GGUF format.", file=sys.stderr)
-            sys.exit(4)
+        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
 
-        # 3. Launch llama-server.exe
+        # 2. Launch llama-server.exe
         llama_cmd = [
             str(llama_exe),
             "--model", str(model_path),
@@ -240,11 +226,16 @@ class WindowsNativeSupervisor:
             "--no-webui"
         ]
         print(f"Starting llama-server.exe on port {self.llama_port}...")
-        self.llama_proc = subprocess.Popen(llama_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        self.llama_proc = subprocess.Popen(
+            llama_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            creationflags=creationflags
+        )
         self.job.assign_process(self.llama_proc.pid)
         print(f"Assigned llama-server (PID {self.llama_proc.pid}) to Win32 Job Object.")
 
-        # 4. Launch dashboard-api via Uvicorn
+        # 3. Launch dashboard-api via Uvicorn
         repo_root = Path(__file__).resolve().parents[3]
         api_dir = repo_root / "ods" / "extensions" / "services" / "dashboard-api"
         env = os.environ.copy()
@@ -268,11 +259,17 @@ class WindowsNativeSupervisor:
             "--log-level", "warning"
         ]
         print(f"Starting dashboard-api on port {self.dashboard_port}...")
-        self.dashboard_proc = subprocess.Popen(api_cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        self.dashboard_proc = subprocess.Popen(
+            api_cmd,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            creationflags=creationflags
+        )
         self.job.assign_process(self.dashboard_proc.pid)
         print(f"Assigned dashboard-api (PID {self.dashboard_proc.pid}) to Win32 Job Object.")
 
-        # 5. Wait for readiness
+        # 4. Wait for readiness
         self._wait_for_health()
         self.running = True
 
@@ -349,15 +346,32 @@ class WindowsNativeSupervisor:
 
     def stop(self, timeout: float = 5.0):
         self.running = False
-        print("Stopping supervised processes...")
+        print("Stopping supervised processes gracefully...")
+        # Step 1: Send cooperative break/interrupt signal
         for name, proc in [("dashboard-api", self.dashboard_proc), ("llama-server", self.llama_proc)]:
             if proc and proc.poll() is None:
-                proc.terminate()
                 try:
-                    proc.wait(timeout=timeout)
-                except Exception:
+                    if sys.platform == "win32":
+                        proc.send_signal(signal.CTRL_BREAK_EVENT)
+                    else:
+                        proc.send_signal(signal.SIGINT)
+                except Exception as e:
+                    print(f"Notice: signal to {name} failed: {e}", file=sys.stderr)
+
+        # Step 2: Await cooperative exit up to timeout
+        t0 = time.perf_counter()
+        for name, proc in [("dashboard-api", self.dashboard_proc), ("llama-server", self.llama_proc)]:
+            if proc and proc.poll() is None:
+                remaining = max(0.1, timeout - (time.perf_counter() - t0))
+                try:
+                    proc.wait(timeout=remaining)
+                    print(f"{name} exited cleanly with code {proc.returncode}.")
+                except subprocess.TimeoutExpired:
+                    print(f"Warning: {name} did not exit within {timeout}s; terminating forcefully.", file=sys.stderr)
                     proc.kill()
                     proc.wait()
+
+        # Step 3: Final Win32 Job Object close (guarantees zero orphaned child processes)
         self.job.close()
         print("Win32 Job Object closed; child processes terminated cleanly.")
 

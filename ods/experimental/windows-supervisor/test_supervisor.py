@@ -118,21 +118,30 @@ def run_test_hash_mismatch():
     assert "SHA-256 mismatch" in res.stderr, "Expected SHA-256 mismatch in stderr"
     print("PASS: Hash mismatch rejected cleanly.")
 
+def verify_port_available(port: int, host: str = "127.0.0.1") -> bool:
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.bind((host, port))
+        s.close()
+        return True
+    except OSError:
+        return False
+
 def run_test_corrupt_model():
     print("\n[TEST 4/6] Testing Corrupt Model Rejection...")
     corrupt_data = DATA_DIR / "corrupt_data"
     models_dir = corrupt_data / "models"
     models_dir.mkdir(parents=True, exist_ok=True)
-    # Write invalid magic bytes
+    # Write invalid bytes
     (models_dir / "SmolLM2-135M-Instruct-Q4_K_M.gguf").write_bytes(b"BAD_MAGIC_HEADER_1234567890")
     
     cmd = [PYTHON, str(SUPERVISOR_SCRIPT), "--data-dir", str(corrupt_data)]
     res = subprocess.run(cmd, capture_output=True, text=True)
     print(f"Exit code: {res.returncode}")
     print(f"Stderr: {res.stderr.strip()}")
-    # Will fail either hash mismatch (2) or magic header (4)
-    assert res.returncode in (2, 4), f"Expected exit code 2 or 4, got {res.returncode}"
-    print("PASS: Corrupt model rejected cleanly.")
+    assert res.returncode == 2, f"Expected exit code 2, got {res.returncode}"
+    assert "SHA-256 mismatch for GGUF model" in res.stderr, "Expected model SHA-256 mismatch message"
+    print("PASS: Corrupt model rejected cleanly with exit code 2.")
 
 def run_test_child_killed_mid_run():
     print("\n[TEST 5/6] Testing Child Killed Mid-Run Detection...")
@@ -140,11 +149,11 @@ def run_test_child_killed_mid_run():
     cmd = [PYTHON, str(SUPERVISOR_SCRIPT), "--data-dir", str(shared_data)]
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     
-    # Wait for readiness
+    # Wait for readiness using health polling (no arbitrary sleep)
     ready = wait_for_both_ready(8080, 3002, timeout=25.0)
     print(f"Children readiness before kill: {ready}")
     assert ready, "Children failed to become ready before mid-run kill test!"
-    time.sleep(1.0)
+    assert proc.poll() is None, "Supervisor exited prematurely before test kill!"
     
     # Find llama-server child and terminate forcefully
     if sys.platform == "win32":
@@ -168,29 +177,73 @@ def run_test_supervisor_killed_no_orphans():
     cmd = [PYTHON, str(SUPERVISOR_SCRIPT), "--data-dir", str(shared_data)]
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     
-    # Wait for readiness and job object assignment
+    # Wait for readiness using health polling (no arbitrary sleep)
     ready = wait_for_both_ready(8080, 3002, timeout=25.0)
     print(f"Children readiness before supervisor kill: {ready}")
     assert ready, "Children failed to become ready before supervisor kill test!"
-    time.sleep(1.0)
+    assert proc.poll() is None, "Supervisor exited prematurely before kill test!"
     
     sup_pid = proc.pid
     print(f"Supervisor PID: {sup_pid}")
     
+    # Identify child PIDs before kill
+    dash_pid = None
+    llama_pid = None
+    if sys.platform == "win32":
+        res_dash = subprocess.run(["netstat", "-ano"], capture_output=True, text=True)
+        for line in res_dash.stdout.splitlines():
+            if ":3002" in line and "LISTENING" in line:
+                try:
+                    dash_pid = int(line.strip().split()[-1])
+                    print(f"Identified dashboard-api child PID: {dash_pid}")
+                    break
+                except (ValueError, IndexError):
+                    pass
+        res_llama = subprocess.run(["tasklist", "/FI", "IMAGENAME eq llama-server.exe", "/FO", "CSV", "/NH"],
+                                   capture_output=True, text=True)
+        for line in res_llama.stdout.splitlines():
+            if "llama-server.exe" in line:
+                try:
+                    llama_pid = int(line.split(",")[1].strip('"'))
+                    print(f"Identified llama-server.exe child PID: {llama_pid}")
+                    break
+                except (ValueError, IndexError):
+                    pass
+
     # Forcefully kill supervisor
     if sys.platform == "win32":
         subprocess.run(["taskkill", "/F", "/PID", str(sup_pid)], capture_output=True)
-        time.sleep(2.0)
-        # Check if llama-server.exe is still alive
+
+        # Wait up to 5s for Win32 Job Object kernel cleanup
+        t_wait = time.perf_counter()
+        while time.perf_counter() - t_wait < 5.0:
+            check_l = subprocess.run(["tasklist", "/FI", "IMAGENAME eq llama-server.exe", "/FO", "CSV", "/NH"],
+                                     capture_output=True, text=True)
+            l_alive = "llama-server.exe" in check_l.stdout
+            d_alive = is_pid_running(dash_pid) if dash_pid else False
+            if not l_alive and not d_alive:
+                break
+            time.sleep(0.3)
+
+        # Assert BOTH llama-server and dashboard-api processes are gone
         check_llama = subprocess.run(["tasklist", "/FI", "IMAGENAME eq llama-server.exe", "/FO", "CSV", "/NH"],
                                      capture_output=True, text=True)
-        print(f"Post-kill llama-server process check: {check_llama.stdout.strip()}")
+        print(f"Post-kill llama-server check: {check_llama.stdout.strip()}")
         assert "llama-server.exe" not in check_llama.stdout, "Orphaned llama-server.exe detected!"
+
+        if dash_pid:
+            dash_running = is_pid_running(dash_pid)
+            print(f"Post-kill dashboard-api check (PID {dash_pid}): is_running={dash_running}")
+            assert not dash_running, f"Orphaned dashboard-api (PID {dash_pid}) detected!"
+
+        # Assert both server ports are released
+        assert verify_port_available(8080), "Port 8080 remains occupied after supervisor kill!"
+        assert verify_port_available(3002), "Port 3002 remains occupied after supervisor kill!"
     else:
         proc.kill()
         proc.wait()
         
-    print("PASS: Supervisor killed; zero orphaned child processes remain in system.")
+    print("PASS: Supervisor killed; both llama-server and dashboard-api confirmed terminated with zero orphans.")
 
 def main():
     print("===============================================================")
