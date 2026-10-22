@@ -31,7 +31,7 @@ class Reply(io.BytesIO):
 def installed(monkeypatch):
     env = {'GPU_BACKEND': 'apple', 'ODS_MODE': 'local', 'ODS_AGENT_KEY': 'private-test-key'}
     monkeypatch.setattr(client.platform, 'system', lambda: 'Darwin')
-    monkeypatch.setattr(client.os, 'geteuid', lambda: 501)
+    monkeypatch.setattr(client.os, 'geteuid', lambda: 501, raising=False)
     monkeypatch.setattr(client, 'installed_env', lambda _: env)
     return env
 

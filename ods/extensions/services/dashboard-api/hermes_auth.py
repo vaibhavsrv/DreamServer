@@ -69,7 +69,7 @@ def _prepare_scratch_volume():
     A newly mounted volume still needs ownership before the UID-remapped agent
     can use it. Descriptor-relative traversal refuses symlinked components.
     """
-    if os.name != "posix" or os.getuid() != 0:
+    if os.name != "posix" or getattr(os, "getuid", lambda: -1)() != 0:
         return
     raw_ids = [os.environ.get(key) for key in ("HERMES_UID", "HERMES_GID")]
     if any(value is None for value in raw_ids):
@@ -106,7 +106,7 @@ def bootstrap():
     if policy_dir.is_symlink():
         raise RuntimeError("Hermes auth policy directory must not be a symlink")
     policy_dir.mkdir(parents=True, exist_ok=True)
-    if os.getuid() == 0:
+    if os.name == "posix" and getattr(os, "getuid", lambda: -1)() == 0:
         os.chown(policy_dir, 0, 0)
     policy_dir.chmod(0o755)
     policy_tmp = policy_dir / "policy.json.tmp"

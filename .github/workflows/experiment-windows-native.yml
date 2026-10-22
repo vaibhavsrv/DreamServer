@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - experiment/windows-native-feasibility
+      - experiment/windows-native-proof
 
 permissions:
   contents: read

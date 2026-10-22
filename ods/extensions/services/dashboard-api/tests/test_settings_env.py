@@ -139,7 +139,7 @@ def constrained_settings(settings_env_fixture):
     """Use the shipped constraints, through the real Settings save boundary."""
     schema_path = settings_env_fixture["schema_path"]
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
-    shipped = json.loads((Path(__file__).resolve().parents[4] / ".env.schema.json").read_text())
+    shipped = json.loads((Path(__file__).resolve().parents[4] / ".env.schema.json").read_text(encoding="utf-8"))
     for key in ("REMOTE_LLM_SSH_PORT", "LLAMA_ARG_N_CPU_MOE", "N8N_PASS",
                 "PIXEL_OPENWEBUI_KEY", "TS_HOSTNAME"):
         schema["properties"][key] = shipped["properties"][key]

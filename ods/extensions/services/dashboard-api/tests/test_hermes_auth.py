@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 from http.cookies import SimpleCookie
 from unittest.mock import AsyncMock
 
@@ -116,6 +117,20 @@ def test_restored_seed_and_config_regenerate_auth_policy_before_upstream_start(t
     assert config.read_bytes() == before
     value = hermes_auth.settings(env)
     assert (value is None) if operator else value['managed'] is True
+
+
+def test_bootstrap_tolerates_non_posix_environment(tmp_path, monkeypatch):
+    """bootstrap() does not crash with AttributeError when os.getuid is absent."""
+    home = tmp_path / "home"
+    home.mkdir()
+    policy = tmp_path / "policy"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_AUTH_POLICY_DIR", str(policy))
+    monkeypatch.delattr(os, "getuid", raising=False)
+    monkeypatch.setattr(hermes_auth, "settings", lambda config_path: None)
+    monkeypatch.setattr(os, "execv", lambda *args: None)
+    hermes_auth.bootstrap()
+    assert (policy / "policy.json").exists()
 
 
 def test_unauthorized_cannot_get_hermes_cookies(client, monkeypatch):
