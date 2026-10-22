@@ -112,9 +112,9 @@ jobs:
           name: feasibility-results-${{ matrix.os }}-py${{ matrix.python-version }}
           path: ci-logs/
 
-  windows-native-poc:
+  windows-hardened-poc:
     if: github.ref_name == 'experiment/windows-native-poc' || github.event_name == 'workflow_dispatch'
-    name: Windows Native PoC (llama-server.exe + dashboard-api)
+    name: Windows Hardened PoC & Failure Tests
     runs-on: windows-latest
     steps:
       - name: Check out repository
@@ -132,15 +132,52 @@ jobs:
           pip install -r ods/extensions/services/dashboard-api/requirements.txt
           pip install uvicorn httpx requests pyyaml
 
-      - name: Run Windows Native PoC Launcher
+      - name: Run Windows Native Hardened PoC
         shell: bash
         run: |
           mkdir -p ci-logs
-          python ods/scripts/windows_native_poc_launcher.py 2>&1 | tee ci-logs/poc_launcher.log
+          python ods/scripts/windows_native_hardened_poc.py 2>&1 | tee ci-logs/hardened_poc.log
 
       - name: Upload PoC Logs and Artifacts
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: windows-native-poc-results
+          name: windows-hardened-poc-results
+          path: ci-logs/
+
+  timing-comparison:
+    if: github.ref_name == 'experiment/windows-native-poc' || github.event_name == 'workflow_dispatch'
+    name: Resolver DNS & Status Timing (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python Dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r ods/extensions/services/dashboard-api/requirements.txt
+          pip install uvicorn httpx requests pyyaml
+
+      - name: Run Timing Measurement
+        shell: bash
+        run: |
+          mkdir -p ci-logs
+          python ods/scripts/measure_dns_timings.py 2>&1 | tee ci-logs/dns_timings_${{ matrix.os }}.log
+
+      - name: Upload Timing Artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: timing-results-${{ matrix.os }}
           path: ci-logs/
