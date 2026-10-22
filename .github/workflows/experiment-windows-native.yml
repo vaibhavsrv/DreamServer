@@ -1,0 +1,110 @@
+name: Windows Native Feasibility Experiment
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - experiment/windows-native-feasibility
+
+permissions:
+  contents: read
+
+jobs:
+  feasibility-matrix:
+    name: Feasibility (${{ matrix.os }}, Py ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+        python-version: ['3.11', '3.12']
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Prepare log directory
+        shell: bash
+        run: |
+          mkdir -p ci-logs
+          echo "OS=${{ matrix.os }}" >> ci-logs/env_info.txt
+          echo "Python=${{ matrix.python-version }}" >> ci-logs/env_info.txt
+          python -V >> ci-logs/env_info.txt
+          node -v >> ci-logs/env_info.txt
+
+      - name: Install Python Dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r ods/extensions/services/dashboard-api/requirements.txt
+          pip install pytest pytest-asyncio uvicorn httpx requests pyyaml
+
+      - name: (a) py_compile all modules
+        id: step_a
+        continue-on-error: true
+        shell: bash
+        run: |
+          echo "=== Running py_compile ===" | tee ci-logs/step_a_pycompile.log
+          python -m compileall ods/extensions/services/dashboard-api ods/bin 2>&1 | tee -a ci-logs/step_a_pycompile.log
+
+      - name: (b) Run dashboard-api pytest suite
+        id: step_b
+        continue-on-error: true
+        shell: bash
+        run: |
+          echo "=== Running dashboard-api pytest suite ===" | tee ci-logs/step_b_pytest.log
+          python -m pytest ods/extensions/services/dashboard-api/tests \
+            --continue-on-collection-errors \
+            -p no:cacheprovider \
+            --junitxml=ci-logs/junit-dashboard-api-${{ matrix.os }}-py${{ matrix.python-version }}.xml \
+            -v 2>&1 | tee -a ci-logs/step_b_pytest.log
+
+      - name: (c) Import ods/bin/ods-host-agent.py with stub environment
+        id: step_c
+        continue-on-error: true
+        shell: bash
+        run: |
+          echo "=== Running host-agent import check ===" | tee ci-logs/step_c_host_agent_import.log
+          python ods/scripts/ci-probe-dashboard-api.py --import-host-agent 2>&1 | tee -a ci-logs/step_c_host_agent_import.log
+
+      - name: (d) Start uvicorn for dashboard-api & probe endpoints
+        id: step_d
+        continue-on-error: true
+        shell: bash
+        run: |
+          echo "=== Running dashboard-api loopback probe ===" | tee ci-logs/step_d_uvicorn_probe.log
+          python ods/scripts/ci-probe-dashboard-api.py --probe-dashboard-api 2>&1 | tee -a ci-logs/step_d_uvicorn_probe.log
+
+      - name: (e) Build dashboard UI (npm ci, npm run build)
+        id: step_e
+        continue-on-error: true
+        shell: bash
+        working-directory: ods/extensions/services/dashboard
+        run: |
+          echo "=== Building Dashboard UI ===" | tee ../../../../ci-logs/step_e_dashboard_ui.log
+          npm ci 2>&1 | tee -a ../../../../ci-logs/step_e_dashboard_ui.log
+          npm run build 2>&1 | tee -a ../../../../ci-logs/step_e_dashboard_ui.log
+          if [ -d "dist" ]; then
+            echo "SUCCESS: dist directory exists." | tee -a ../../../../ci-logs/step_e_dashboard_ui.log
+            ls -la dist | tee -a ../../../../ci-logs/step_e_dashboard_ui.log
+          else
+            echo "FAILURE: dist directory does not exist!" | tee -a ../../../../ci-logs/step_e_dashboard_ui.log
+            exit 1
+          fi
+
+      - name: Upload logs and test artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: feasibility-results-${{ matrix.os }}-py${{ matrix.python-version }}
+          path: ci-logs/
