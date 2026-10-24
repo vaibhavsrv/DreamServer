@@ -145,7 +145,7 @@ foreach ($cls in $classes) {
         [System.IO.Directory]::CreateDirectory($localApp) | Out-Null
     } catch {
         $dirOk = $false
-        Write-Host "FAILED TO CREATE DIRECTORIES FOR $className: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "FAILED TO CREATE DIRECTORIES FOR ${className}: $($_.Exception.Message)" -ForegroundColor Red
         $summaryResults += @{
             Class = $className
             Command = "DirectoryCreation"

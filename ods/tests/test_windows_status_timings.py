@@ -103,10 +103,38 @@ async def measure_service_health_checks():
             
             return elapsed_all
         except Exception as exc:
-            print(f"Error executing service health checks: {type(exc).__name__}: {exc}")
-            import traceback
-            traceback.print_exc()
-            return None
+            print(f"helpers module check unavailable ({exc}); falling back to standard library socket/HTTP probes")
+            return measure_stdlib_health_probes()
+
+def measure_stdlib_health_probes():
+    import http.client
+    print("\nExecuting standard library HTTP service health probes (timeout=2.0s)...")
+    service_probes = [
+        ("llama-server", "127.0.0.1", 8080, "/health"),
+        ("dashboard-api", "127.0.0.1", 3002, "/health"),
+        ("whisper", "whisper", 8000, "/health"),
+        ("litellm", "litellm", 4000, "/health/readiness"),
+        ("qdrant", "qdrant", 6333, "/"),
+        ("token-spy", "token-spy", 8080, "/health"),
+    ]
+    print(f"{'Service ID':<15} | {'Host':<15} | {'Port':<6} | {'Status':<10} | {'Elapsed (ms)':<12} | Details")
+    print("-" * 75)
+    for sid, host, port, path in service_probes:
+        t0 = time.perf_counter()
+        try:
+            conn = http.client.HTTPConnection(host, port, timeout=2.0)
+            conn.request("GET", path)
+            resp = conn.getresponse()
+            elapsed_ms = (time.perf_counter() - t0) * 1000.0
+            status = "UP" if resp.status < 500 else "ERROR"
+            details = f"HTTP {resp.status}"
+            conn.close()
+        except Exception as exc:
+            elapsed_ms = (time.perf_counter() - t0) * 1000.0
+            status = "DOWN"
+            details = f"{type(exc).__name__}: {str(exc)[:35]}"
+        print(f"{sid:<15} | {host:<15} | {port:<6} | {status:<10} | {elapsed_ms:<12.2f} | {details}")
+    print("-" * 75)
 
 def main():
     measure_hostname_resolutions()
