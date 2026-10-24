@@ -475,10 +475,25 @@ jobs:
         shell: powershell
         run: ./tests/test-windows-path-classes.ps1
 
+      - name: Windows Harness Space-Path Check (PowerShell 7)
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: pwsh
+        run: ./tests/test-windows-harness-check.ps1
+
+      - name: Windows Harness Space-Path Check (Windows PowerShell)
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: powershell
+        run: ./tests/test-windows-harness-check.ps1
+
       - name: Measure /status and Hostname Resolution Timings
         if: ${{ !cancelled() }}
         shell: bash
         run: python3 tests/test_windows_status_timings.py
+
+      - name: Measure /status Options Benchmark
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: python3 tests/test_status_options_benchmark.py
 
       - name: Every PowerShell test runs in a workflow
         if: ${{ !cancelled() }}
