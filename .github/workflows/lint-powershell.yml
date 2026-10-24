@@ -500,6 +500,15 @@ jobs:
         if: ${{ !cancelled() && runner.os == 'Windows' }}
         shell: powershell
         run: ./tests/test-windows-whisper-port-conflict.ps1
+      - name: Windows CLI Literal Path Contract (PowerShell 7)
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: pwsh
+        run: ./tests/contracts/test-windows-cli-literalpath.ps1
+
+      - name: Windows CLI Literal Path Contract (Windows PowerShell)
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: powershell
+        run: ./tests/contracts/test-windows-cli-literalpath.ps1
 
       - name: Every PowerShell test runs in a workflow
         if: ${{ !cancelled() }}

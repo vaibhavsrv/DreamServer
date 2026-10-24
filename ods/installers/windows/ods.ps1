@@ -98,13 +98,13 @@ function Test-DockerRunning {
 function Test-Install {
     param([switch]$SkipDockerCheck)
 
-    if (-not (Test-Path $InstallDir)) {
+    if (-not (Test-Path -LiteralPath $InstallDir)) {
         Write-AIError "ODS not found at $InstallDir. Set ODS_HOME or run installer first."
         exit 1
     }
     $baseCompose = Join-Path $InstallDir "docker-compose.base.yml"
     $monoCompose = Join-Path $InstallDir "docker-compose.yml"
-    if (-not (Test-Path $baseCompose) -and -not (Test-Path $monoCompose)) {
+    if (-not (Test-Path -LiteralPath $baseCompose) -and -not (Test-Path -LiteralPath $monoCompose)) {
         Write-AIError "docker-compose.base.yml not found in $InstallDir"
         exit 1
     }
@@ -1986,8 +1986,8 @@ function Stop-NativeInferenceServer {
         Write-AISuccess "Native llama-server stopped (PID $($status.Pid))"
     }
 
-    if (Test-Path $script:INFERENCE_PID_FILE) {
-        Remove-Item $script:INFERENCE_PID_FILE -Force -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath $script:INFERENCE_PID_FILE) {
+        Remove-Item -LiteralPath $script:INFERENCE_PID_FILE -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -2296,7 +2296,7 @@ function Invoke-Stop {
     }
 
     if (-not $Service) {
-        if (-not (Test-Path $InstallDir)) {
+        if (-not (Test-Path -LiteralPath $InstallDir)) {
             Write-AIError "ODS not found at $InstallDir. Set ODS_HOME or run installer first."
             exit 1
         }
@@ -3307,13 +3307,13 @@ function Test-ODSInstallFiles {
         Does NOT require Docker Desktop to be running -- intentionally lighter
         than Test-Install so that 'ods enable' works offline.
     #>
-    if (-not (Test-Path $InstallDir)) {
+    if (-not (Test-Path -LiteralPath $InstallDir)) {
         Write-AIError "ODS not found at $InstallDir. Set ODS_HOME or run installer first."
         exit 1
     }
     $baseCompose = Join-Path $InstallDir "docker-compose.base.yml"
     $monoCompose = Join-Path $InstallDir "docker-compose.yml"
-    if (-not (Test-Path $baseCompose) -and -not (Test-Path $monoCompose)) {
+    if (-not (Test-Path -LiteralPath $baseCompose) -and -not (Test-Path -LiteralPath $monoCompose)) {
         Write-AIError "docker-compose.base.yml not found in $InstallDir"
         exit 1
     }
