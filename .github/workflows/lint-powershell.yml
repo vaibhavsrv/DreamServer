@@ -500,6 +500,15 @@ jobs:
         if: ${{ !cancelled() && runner.os == 'Windows' }}
         shell: powershell
         run: ./tests/test-windows-whisper-port-conflict.ps1
+      - name: Windows LiteralPath Reproduction (PowerShell 7)
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: pwsh
+        run: ./tests/test-windows-literalpath-repro.ps1
+
+      - name: Windows LiteralPath Reproduction (Windows PowerShell 5.1)
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: powershell
+        run: ./tests/test-windows-literalpath-repro.ps1
 
       - name: Every PowerShell test runs in a workflow
         if: ${{ !cancelled() }}
