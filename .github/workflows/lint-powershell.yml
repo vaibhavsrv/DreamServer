@@ -6,6 +6,7 @@ on:
     branches:
       - main
       - master
+      - 'scratch/**'
 
 permissions:
   contents: read
@@ -529,3 +530,49 @@ jobs:
             exit 1
           }
           Write-Host 'Every PowerShell test under ods/tests runs in a workflow.'
+
+      - name: Setup Python 3.11 for host agent tests and Docker compose probe
+        if: ${{ runner.os == 'Linux' }}
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: "3.11"
+
+      - name: Run Host Agent Remote Provider Tests on Ubuntu
+        if: ${{ runner.os == 'Linux' }}
+        run: |
+          pip install pytest starlette httpx fastapi
+          pytest extensions/services/dashboard-api/tests/test_host_agent.py -v -k "remote_provider or upsert"
+
+      - name: Docker Compose .env Restart vs Up-d Probe on Ubuntu
+        if: ${{ runner.os == 'Linux' }}
+        run: |
+          mkdir -p /tmp/compose-probe
+          cd /tmp/compose-probe
+          cat << 'EOF' > compose.yaml
+          services:
+            test-env:
+              image: alpine:latest
+              container_name: test-env-probe
+              command: ["sleep", "3600"]
+              environment:
+                - OPENAI_BASE_URL=${HERMES_LLM_BASE_URL:-http://llama-server:8080/v1}
+          EOF
+          echo "HERMES_LLM_BASE_URL=http://model-router:9099/v1" > .env
+          docker compose up -d
+          echo "=== 1. Initial container env after docker compose up -d ==="
+          docker exec test-env-probe env | grep OPENAI_BASE_URL || true
+
+          # Edit .env
+          echo "HERMES_LLM_BASE_URL=http://litellm:4000/v1" > .env
+
+          # Test docker restart
+          docker restart test-env-probe
+          echo "=== 2. Container env after editing .env and running docker restart ==="
+          docker exec test-env-probe env | grep OPENAI_BASE_URL || true
+
+          # Test docker compose up -d
+          docker compose up -d
+          echo "=== 3. Container env after running docker compose up -d ==="
+          docker exec test-env-probe env | grep OPENAI_BASE_URL || true
+
+          docker compose down
